@@ -90,6 +90,12 @@ web_modules/
 .env.production.local
 .env.local
 
+# 업로드/생성 파일
+uploads/
+generated-images/
+user-files/
+rag-data/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
