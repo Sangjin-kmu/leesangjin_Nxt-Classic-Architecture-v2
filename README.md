@@ -35,6 +35,10 @@
 2. 간단한 회원가입 (닉네임 + 비밀번호)
 3. 이후 내부 튜토리얼에 따라 진행
 
+## 테스트 예시(사진)  
+<img width="1281" height="936" alt="image" src="https://github.com/user-attachments/assets/7ddab9fb-207e-4070-a41a-d450e0614831" />
+
+
 ## 실행 방법 (직접 배포 시)
 
 ### Lambda 배포
