@@ -14,6 +14,8 @@ const MainApp = forwardRef(function MainApp({ nickname, onLogout, serverUrl }, r
   const [selectedAI, setSelectedAI] = useState("gemini");
   const [selectedTemplate, setSelectedTemplate] = useState("hero");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(null); // server | image | page | edit | done
+  const [isEditMode, setIsEditMode] = useState(false);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]); // 최대 5장
   const [hasGenerated, setHasGenerated] = useState(false);
@@ -36,21 +38,35 @@ const MainApp = forwardRef(function MainApp({ nickname, onLogout, serverUrl }, r
   useImperativeHandle(ref, () => ({
     triggerSend: (text) => {
       setInput(text);
-      // 약간의 딜레이 후 전송 (state 반영 대기)
       setTimeout(() => {
-        setInput(""); setIsLoading(true);
+        setInput(""); setIsLoading(true); setLoadingStep("server");
         addMsg("user", text);
         const fd = new FormData();
         fd.append("message", text);
         fd.append("template", selectedTemplate);
         fetch(`${serverUrl}/generate`, {
           method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, body: fd,
-        }).then(r => r.json()).then(data => {
-          setHtml(data.html); setHasGenerated(true);
-          addMsg("assistant", "상세페이지가 생성되었습니다.");
-        }).catch(() => {
-          addMsg("assistant", "생성에 실패했습니다.");
-        }).finally(() => setIsLoading(false));
+        }).then(async (response) => {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const parts = buf.split("\n\n");
+            buf = parts.pop() || "";
+            for (const p of parts) {
+              if (!p.startsWith("data: ")) continue;
+              try {
+                const d = JSON.parse(p.slice(6));
+                if (d.type === "step") setLoadingStep(d.step);
+                else if (d.type === "result") { setHtml(d.html); setHasGenerated(true); addMsg("assistant", "상세페이지가 생성되었습니다."); }
+              } catch {}
+            }
+          }
+        }).catch(() => addMsg("assistant", "생성에 실패했습니다."))
+          .finally(() => { setIsLoading(false); setLoadingStep(null); });
       }, 300);
     },
     hasResult: () => !!html,
@@ -75,9 +91,9 @@ const MainApp = forwardRef(function MainApp({ nickname, onLogout, serverUrl }, r
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
     const userText = input;
-    setInput(""); setIsLoading(true);
+    setInput(""); setIsLoading(true); setLoadingStep("server");
+    setIsEditMode(!!(html && hasGenerated));
 
-    // 이미지 미리보기 URL 생성
     const previewImages = images.map((f, i) => ({
       number: i + 1,
       url: URL.createObjectURL(f),
@@ -88,24 +104,49 @@ const MainApp = forwardRef(function MainApp({ nickname, onLogout, serverUrl }, r
       const fd = new FormData();
       fd.append("message", userText);
       fd.append("template", selectedTemplate);
-      if (html && hasGenerated) fd.append("prevHtml", html.slice(0, 12000));
+      if (html && hasGenerated) fd.append("prevHtml", html);
       images.forEach((img) => fd.append("images", img));
 
-      const res = await fetch(`${serverUrl}/generate`, {
-        method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, body: fd,
+      const response = await fetch(`${serverUrl}/generate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getToken()}` },
+        body: fd,
       });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      setHtml(data.html);
-      setHasGenerated(true);
 
-      let msg = hasGenerated ? "수정이 반영되었습니다." : "상세페이지가 생성되었습니다.";
-      if (data.sdProductImages?.length > 0) msg += ` (AI 상품 이미지 ${data.sdProductImages.length}장`;
-      if (data.sdBgImages?.length > 0) msg += `${data.sdProductImages?.length > 0 ? " + " : " ("}배경 ${data.sdBgImages.length}장`;
-      if (data.sdProductImages?.length > 0 || data.sdBgImages?.length > 0) msg += " 생성)";
-      addMsg("assistant", msg);
-    } catch { addMsg("assistant", "생성에 실패했습니다. 다시 시도해주세요."); }
-    finally { setIsLoading(false); setImages([]); }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === "step") {
+              setLoadingStep(data.step);
+            } else if (data.type === "result") {
+              setHtml(data.html);
+              setHasGenerated(true);
+              const imgCount = data.generatedImages?.length || 0;
+              addMsg("assistant", `상세페이지가 생성되었습니다.${imgCount > 0 ? ` (AI 이미지 ${imgCount}장)` : ""}`);
+            } else if (data.type === "error") {
+              addMsg("assistant", data.error || "생성에 실패했습니다.");
+            }
+          } catch {}
+        }
+      }
+    } catch {
+      addMsg("assistant", "생성에 실패했습니다. 다시 시도해주세요.");
+    } finally {
+      setIsLoading(false); setLoadingStep(null); setImages([]);
+    }
   };
 
   const downloadAsImage = async () => {
@@ -177,7 +218,48 @@ const MainApp = forwardRef(function MainApp({ nickname, onLogout, serverUrl }, r
           {isLoading && (
             <div className="chat-msg assistant">
               <span className="chat-role">AI</span>
-              <div className="typing-dots"><span /><span /><span /></div>
+              <div className="loading-steps">
+                {isEditMode ? (
+                  <>
+                    <div className={`step-item ${loadingStep === "server" ? "active" : loadingStep ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep !== "server" && loadingStep ? "\u2713" : ""}</span>
+                      <span>서버 요청 중</span>
+                      {loadingStep === "server" && <div className="mini-spinner" />}
+                    </div>
+                    <div className={`step-item ${loadingStep === "edit" ? "active" : loadingStep === "done" ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep === "done" ? "\u2713" : ""}</span>
+                      <span>수정 사항 반영 중</span>
+                      {loadingStep === "edit" && <div className="mini-spinner" />}
+                    </div>
+                    <div className={`step-item ${loadingStep === "done" ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep === "done" ? "\u2713" : ""}</span>
+                      <span>완료</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className={`step-item ${loadingStep === "server" ? "active" : loadingStep ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep !== "server" && loadingStep ? "\u2713" : ""}</span>
+                      <span>서버 요청 중</span>
+                      {loadingStep === "server" && <div className="mini-spinner" />}
+                    </div>
+                    <div className={`step-item ${loadingStep === "image" ? "active" : (loadingStep === "page" || loadingStep === "done") ? "done" : ""}`}>
+                      <span className="step-icon">{(loadingStep === "page" || loadingStep === "done") ? "\u2713" : ""}</span>
+                      <span>이미지 생성 중</span>
+                      {loadingStep === "image" && <div className="mini-spinner" />}
+                    </div>
+                    <div className={`step-item ${loadingStep === "page" ? "active" : loadingStep === "done" ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep === "done" ? "\u2713" : ""}</span>
+                      <span>상세페이지 생성 중</span>
+                      {loadingStep === "page" && <div className="mini-spinner" />}
+                    </div>
+                    <div className={`step-item ${loadingStep === "done" ? "done" : ""}`}>
+                      <span className="step-icon">{loadingStep === "done" ? "\u2713" : ""}</span>
+                      <span>완료</span>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
           <div ref={chatEndRef} />

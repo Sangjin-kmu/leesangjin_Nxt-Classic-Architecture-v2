@@ -37,6 +37,11 @@ export default function AuthPage({ onLogin, serverUrl }) {
           {error && <div className="auth-error">{error}</div>}
           <button type="submit" className="auth-submit" disabled={loading}>{loading ? "처리 중..." : isReg ? "회원가입" : "로그인"}</button>
         </form>
+        <div className="auth-notice">
+          <p>사용자별 채팅을 따로 보여주기 위한 로그인 단계입니다.</p>
+          <p>실제로 자주 쓰는 아이디와 비밀번호를 사용하여 회원가입은 하지 말아주세요.</p>
+          <p className="auth-example">예) 아이디 : 이상진 / 비밀번호 : 1234</p>
+        </div>
       </div>
     </div>
   );

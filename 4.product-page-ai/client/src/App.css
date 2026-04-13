@@ -280,3 +280,17 @@
 
 /* 첨부 영역 썸네일 */
 .attach-thumb { width:28px; height:28px; object-fit:cover; border-radius:4px; }
+
+/* 단계별 로딩 */
+.loading-steps { display:flex; flex-direction:column; gap:8px; padding:4px 0; }
+.step-item { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text3); transition:color .3s; }
+.step-item.active { color:var(--accent); font-weight:600; }
+.step-item.done { color:var(--text2); }
+.step-item .step-icon { width:16px; text-align:center; font-size:12px; }
+.step-item.done .step-icon { color:#34c759; }
+.mini-spinner { width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-left:4px; }
+
+/* 로그인 안내 */
+.auth-notice { margin-top:20px; padding:14px; background:var(--bg); border-radius:10px; border:1px solid var(--border); }
+.auth-notice p { font-size:12px; color:var(--text3); line-height:1.6; text-align:center; }
+.auth-example { margin-top:6px; color:var(--text2); font-weight:600; }

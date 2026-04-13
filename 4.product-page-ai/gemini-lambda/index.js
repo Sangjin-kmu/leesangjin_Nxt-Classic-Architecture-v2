@@ -115,19 +115,25 @@ ${imageInfo}
         existingImages.forEach((url, i) => { imageInfo += `기존이미지${i + 1}: ${url}\n`; });
       }
 
-      const prompt = `기존 상세페이지 HTML을 수정해주세요.
+      const prompt = `당신은 HTML 편집 전문가입니다.
 
-중요: 기존에 사용된 이미지(<img> 태그, background-image)는 절대 제거하지 마세요. 모든 이미지 URL을 그대로 유지하세요.
+중요 규칙:
+- 사용자가 요청한 부분만 정확히 수정하세요.
+- 요청하지 않은 부분은 한 글자도 변경하지 마세요.
+- HTML 구조, CSS 스타일, 이미지, 레이아웃을 절대 변경하지 마세요.
+- 기존 HTML을 그대로 복사하고, 요청된 부분만 찾아서 바꾸세요.
+- 모든 이미지 URL을 그대로 유지하세요.
 
 ${imageInfo}
 
-[기존 HTML]
+[기존 HTML - 이것을 기반으로 수정]
 ${prevHtml}
 
-[수정 요청] ${message}
+[사용자 수정 요청]
+${message}
 
-요청된 부분만 수정, 이미지와 나머지 유지. 완전한 HTML 출력.
-JavaScript, 애니메이션, hover효과, 버튼, 링크 등 동적/인터랙티브 요소 절대 금지. 정적 페이지만.
+위 기존 HTML에서 사용자가 요청한 부분만 수정한 완전한 HTML을 출력하세요.
+<!DOCTYPE html>부터 </html>까지 전체를 출력하세요.
 HTML 외 텍스트 금지, 코드블록 금지.`;
 
       const result = await model.generateContent(buildParts(prompt));

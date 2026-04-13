@@ -105,17 +105,26 @@ async function generateSDImage(prompt) {
     ? { auth: { username: process.env.SD_USER, password: process.env.SD_PASS } }
     : {};
   try {
-    // 체크포인트 설정 (Juggernaut XL)
-    const sdModel = process.env.SD_MODEL || "juggernautXL_v9Rundiffusionphoto2";
+    // 체크포인트 설정
+    const sdModel = process.env.SD_MODEL || "juggernautXL_ragnarokBy.safetensors";
     try {
       await axios.post(`${sdUrl}/sdapi/v1/options`, {
         sd_model_checkpoint: sdModel,
       }, { timeout: 30000, ...authOpt });
     } catch (e) { console.log("SD 모델 설정 스킵:", e.message); }
 
+    // 사실적 품질 키워드 강제 추가
+    const enhancedPrompt = `${prompt}, product only, no people, no hands, isolated product, clean composition, professional product photography, studio lighting, sharp focus, high detail, 8k uhd`;
+
     const res = await axios.post(`${sdUrl}/sdapi/v1/txt2img`, {
-      prompt, negative_prompt: "text, watermark, low quality, blurry, deformed, nsfw, nude, naked, sexual, erotic, pornographic, violence, blood, gore, weapon, gun, knife, disturbing, grotesque",
-      steps: 20, width: 1024, height: 576, cfg_scale: 7,
+      prompt: enhancedPrompt,
+      negative_prompt: "person, people, human, hand, hands, fingers, face, body, arm, leg, skin, wire, wires, cable, cables, cord, cords, plug, connector, text, letters, words, watermark, logo, label, low quality, blurry, deformed, distorted, disfigured, bad anatomy, unrealistic, cartoon, anime, painting, drawing, illustration, sketch, surreal, dreamlike, abstract, weird shape, melting, floating parts, extra limbs, nsfw, nude, naked, sexual, erotic, pornographic, violence, blood, gore, weapon, gun, knife, disturbing, grotesque",
+      steps: 30,
+      width: 1024,
+      height: 576,
+      cfg_scale: 8,
+      sampler_name: "DPM++ 2M Karras",
+      seed: -1,
     }, { timeout: 180000, ...authOpt });
     if (res.data?.images?.[0]) {
       const name = `sd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`;
@@ -149,12 +158,34 @@ async function callGemini(payload) {
   return data;
 }
 
-// ===== 메인 생성 API =====
+// ===== 메인 생성 API (SSE로 단계별 진행 상태 전송) =====
 app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
+  // SSE 헤더 설정
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+  });
+
+  const sendStep = (step, detail) => {
+    res.write(`data: ${JSON.stringify({ type: "step", step, detail })}\n\n`);
+  };
+  const sendResult = (data) => {
+    res.write(`data: ${JSON.stringify({ type: "result", ...data })}\n\n`);
+    res.end();
+  };
+  const sendError = (msg) => {
+    res.write(`data: ${JSON.stringify({ type: "error", error: msg })}\n\n`);
+    res.end();
+  };
+
   try {
     const { message, template, prevHtml } = req.body;
     const userId = req.user.id;
     const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    sendStep("server", "서버 요청 처리 중...");
 
     // 1. 업로드된 이미지 처리
     const userImages = (req.files || []).map((f, i) => ({
@@ -165,6 +196,7 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
 
     // 수정 모드면 기존 이미지 URL 보존 + Gemini 호출
     if (prevHtml) {
+      sendStep("server", "서버 요청 처리 중...");
       const sharp = require("sharp");
       const userImagesBase64 = [];
       for (const img of userImages) {
@@ -187,10 +219,12 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
         existingImages.push(match[1]);
       }
 
+      sendStep("edit", "수정 사항 반영 중...");
+
       const result = await callGemini({
         mode: "edit",
         message,
-        prevHtml: prevHtml.slice(0, 6000),
+        prevHtml: prevHtml,
         userImages: userImagesBase64,
         existingImages,
       });
@@ -198,12 +232,14 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
       const html = result.html || "";
       await db.execute("INSERT INTO chat_messages (user_id, role, content) VALUES (?,?,?)", [userId, "user", message || ""]);
       await db.execute("INSERT INTO chat_messages (user_id, role, content) VALUES (?,?,?)", [userId, "assistant", "수정이 반영되었습니다."]);
-      return res.json({ html });
+      sendStep("done", "완료");
+      return sendResult({ html });
     }
 
     // === 새 생성: 2단계 프로세스 ===
 
     // STEP 1: Gemini 1차 호출 - 필요한 이미지 목록 요청
+    sendStep("server", "AI가 필요한 이미지를 분석 중...");
     console.log("[STEP 1] Gemini에게 필요한 이미지 목록 요청...");
     const sharp = require("sharp");
     const userImagesBase64 = [];
@@ -228,6 +264,7 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
     // STEP 2: Nova → SD 이미지 생성
     let generatedImages = [];
     if (process.env.SD_API_URL && neededImages.length > 0) {
+      sendStep("image", "이미지 생성 중...");
       console.log("[STEP 2] Nova에게 SD 프롬프트 요청...");
       const novaResult = await callNovaForPrompts(message, neededImages.map(i => i.description).join("\n"));
       const sdPrompts = novaResult.prompts || [];
@@ -247,6 +284,7 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
     }
 
     // STEP 3: Gemini 2차 호출 - 최종 HTML 생성
+    sendStep("page", "상세페이지 생성 중...");
     console.log("[STEP 3] Gemini에게 최종 HTML 생성 요청...");
     const finalResult = await callGemini({
       mode: "generate",
@@ -276,8 +314,9 @@ app.post("/generate", auth, upload.array("images", 5), async (req, res) => {
     await db.execute("INSERT INTO chat_messages (user_id, role, content) VALUES (?,?,?)",
       [userId, "assistant", `상세페이지가 생성되었습니다.${imgMsg}`]);
 
-    res.json({ html, generatedImages });
-  } catch (err) { console.error("생성 오류:", err); res.status(500).json({ error: "페이지 생성 실패" }); }
+    sendStep("done", "완료");
+    sendResult({ html, generatedImages });
+  } catch (err) { console.error("생성 오류:", err); sendError("페이지 생성 실패"); }
 });
 
 // 채팅 기록
